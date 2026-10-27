@@ -1,0 +1,75 @@
+name: Update News
+
+on:
+  schedule:
+    # Zeiten in UTC. Winter (MEZ): 05:23, 12:23, 17:23 Uhr · Sommer (MESZ): 06:23, 13:23, 18:23 Uhr
+    - cron: "23 4,11,16 * * *"
+  workflow_dispatch:          # manuell starten: Actions → Update News → Run workflow
+  push:
+    branches: [main]
+    paths:
+      - "index.html"
+      - "config.json"
+      - "scripts/**"
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  models: read                # gratis KI über GitHub Models (Übersetzung + Radio-Moderation)
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Nachrichten sammeln
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: eigene KI (z.B. Ollama auf dem Heimserver, OpenAI …) – als Repository-Secrets anlegen
+          AI_BASE_URL: ${{ secrets.AI_BASE_URL }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AI_MODEL: ${{ vars.AI_MODEL }}
+        run: |
+          mkdir -p _site
+          python3 scripts/fetch_news.py --config config.json --out _site/news.json
+
+      # Natürliche Neural-Stimme fürs Radio. Schlägt das fehl, nutzt die Seite die Browser-Stimme.
+      - name: Radio einsprechen (Neural-Stimme)
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          TTS_VOICE: ${{ vars.TTS_VOICE }}
+        run: |
+          python3 -m pip install --quiet --disable-pip-version-check edge-tts
+          python3 scripts/make_audio.py --config config.json --news _site/news.json --out _site
+
+      - name: Seite zusammenstellen
+        run: |
+          cp index.html _site/
+          touch _site/.nojekyll
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
